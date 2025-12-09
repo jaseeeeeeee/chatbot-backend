@@ -1,17 +1,17 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
+import requests
 import json
-import nltk
-import numpy as np
 
-nltk.download("stopwords")
+# HuggingFace QA model (FREE, NO KEY required)
+HF_API_URL = "https://api-inference.huggingface.co/models/deepset/roberta-base-squad2"
+HF_HEADERS = {"Authorization": ""}  # Empty because we are using free tier
 
-# ----------------------
-# FastAPI App Setup
-# ----------------------
+
+# -----------------------------
+# FASTAPI APP INITIALIZATION
+# -----------------------------
 app = FastAPI()
 
 app.add_middleware(
@@ -22,52 +22,80 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ----------------------
-# Load FAQ Dataset
-# ----------------------
+
+# -----------------------------
+# LOAD FAQ FILE
+# -----------------------------
 with open("faq.json") as f:
     faq_data = json.load(f)
 
 faq_questions = [item["question"] for item in faq_data]
 faq_answers = [item["answer"] for item in faq_data]
 
-# ----------------------
-# Load Lightweight Model
-# ----------------------
-model = SentenceTransformer("sentence-transformers/paraphrase-MiniLM-L3-v2")
-faq_embeddings = model.encode(faq_questions)
 
-# ----------------------
-# Request Body
-# ----------------------
+# -----------------------------
+# REQUEST BODY MODEL
+# -----------------------------
 class ChatRequest(BaseModel):
     message: str
     context: str | None = ""
 
-# ----------------------
-# Helper Function
-# ----------------------
-def get_best_match(query, context_text=""):
-    combined = faq_questions.copy()
-    answers = faq_answers.copy()
 
-    if context_text:
-        combined.append(context_text)
-        answers.append("Here is information from your uploaded PDF.")
+# -----------------------------
+# FIND BEST MATCH FROM FAQ
+# -----------------------------
+def get_faq_answer(user_input):
+    user_input = user_input.lower()
 
-    embeddings = model.encode(combined + [query])
-    query_emb = embeddings[-1].reshape(1, -1)
-    db_emb = embeddings[:-1]
+    for q, a in zip(faq_questions, faq_answers):
+        if q.lower() in user_input or user_input in q.lower():
+            return a
 
-    similarity_scores = cosine_similarity(query_emb, db_emb)[0]
-    best_idx = np.argmax(similarity_scores)
+    return None
 
-    return answers[best_idx]
 
-# ----------------------
-# Chat Endpoint
-# ----------------------
+# -----------------------------
+# HUGGINGFACE API CALL
+# -----------------------------
+def ask_huggingface(question, context):
+    payload = {"question": question, "context": context}
+
+    try:
+        response = requests.post(HF_API_URL, headers=HF_HEADERS, json=payload)
+        data = response.json()
+
+        # If the model returns an answer
+        if isinstance(data, dict) and "answer" in data:
+            return data["answer"]
+
+        return "I'm not sure, but I'm still learning! 🤖"
+    except:
+        return "The AI model is currently unavailable. Try again later."
+
+
+# -----------------------------
+# MAIN CHAT ENDPOINT
+# -----------------------------
 @app.post("/chat")
-def chat(req: ChatRequest):
-    reply = get_best_match(req.message, req.context)
-    return {"reply": reply}
+def chat(request: ChatRequest):
+
+    user_question = request.message
+    user_context = request.context or ""
+
+    # 1️⃣ Check FAQ first (fast!)
+    faq_answer = get_faq_answer(user_question)
+    if faq_answer:
+        return {"reply": faq_answer}
+
+    # 2️⃣ If not in FAQ → Ask HuggingFace model
+    hf_answer = ask_huggingface(user_question, user_context)
+
+    return {"reply": hf_answer}
+
+
+# -----------------------------
+# ROOT ROUTE FOR TESTING
+# -----------------------------
+@app.get("/")
+def home():
+    return {"status": "Chatbot backend is running successfully! 🚀"}
