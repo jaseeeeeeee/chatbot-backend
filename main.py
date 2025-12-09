@@ -1,76 +1,73 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from transformers import pipeline
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import json
 import nltk
+import numpy as np
 
 nltk.download("stopwords")
 
-# ---------------------------
-# API Setup
-# ---------------------------
+# ----------------------
+# FastAPI App Setup
+# ----------------------
 app = FastAPI()
 
-# Allow Vercel frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to your Vercel domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------------------
-# Load FAQ Data
-# ---------------------------
+# ----------------------
+# Load FAQ Dataset
+# ----------------------
 with open("faq.json") as f:
     faq_data = json.load(f)
 
 faq_questions = [item["question"] for item in faq_data]
 faq_answers = [item["answer"] for item in faq_data]
 
-vectorizer = TfidfVectorizer(stop_words=nltk.corpus.stopwords.words("english"))
-faq_vectors = vectorizer.fit_transform(faq_questions)
+# ----------------------
+# Load Lightweight Model
+# ----------------------
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+faq_embeddings = model.encode(faq_questions)
 
-# ---------------------------
-# Load HuggingFace Model
-# ---------------------------
-qa = pipeline("question-answering", model="distilbert-base-uncased-distilled-squad")
-
-# ---------------------------
-# Request Body Structure
-# ---------------------------
+# ----------------------
+# Request Body
+# ----------------------
 class ChatRequest(BaseModel):
     message: str
     context: str | None = ""
 
-# ---------------------------
-# Core Chat Endpoint
-# ---------------------------
+# ----------------------
+# Helper Function
+# ----------------------
+def get_best_match(query, context_text=""):
+    combined = faq_questions.copy()
+    answers = faq_answers.copy()
+
+    if context_text:
+        combined.append(context_text)
+        answers.append("Here is information from your uploaded PDF.")
+
+    embeddings = model.encode(combined + [query])
+    query_emb = embeddings[-1].reshape(1, -1)
+    db_emb = embeddings[:-1]
+
+    similarity_scores = cosine_similarity(query_emb, db_emb)[0]
+    best_idx = np.argmax(similarity_scores)
+
+    return answers[best_idx]
+
+# ----------------------
+# Chat Endpoint
+# ----------------------
 @app.post("/chat")
 def chat(req: ChatRequest):
-    user_input = req.message
-    pdf_context = req.context or ""
-
-    combined_context = (
-        "This is an AI chatbot. It answers general questions and FAQs about courses, "
-        "fees, duration, support, and technical topics. "
-        + pdf_context
-    )
-
-    # Try transformer model
-    try:
-        answer = qa(question=user_input, context=combined_context)["answer"]
-        if len(answer.strip()) > 3:
-            return {"reply": answer}
-    except:
-        pass
-
-    # Fallback to FAQ matching
-    user_vec = vectorizer.transform([user_input])
-    sim = cosine_similarity(user_vec, faq_vectors)
-    idx = sim.argmax()
-    return {"reply": faq_answers[idx]}
+    reply = get_best_match(req.message, req.context)
+    return {"reply": reply}
