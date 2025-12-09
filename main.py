@@ -34,7 +34,7 @@ faq_answers = [item["answer"] for item in faq_data]
 # ----------------------
 # Load Lightweight Model
 # ----------------------
-model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+model = SentenceTransformer("sentence-transformers/paraphrase-MiniLM-L3-v2")
 faq_embeddings = model.encode(faq_questions)
 
 # ----------------------
